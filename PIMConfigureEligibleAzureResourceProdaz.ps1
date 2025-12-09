@@ -7,14 +7,14 @@
     If an existing Eligible Role Assignment exists at the same Resource Group scope for the same roleNameToBeAssigned and memberObjectId it will be deleted, ensuring this script is idempotent.
     Finally it will then grant an Eligible Role Assignment to a specified roleNameToBeAssigned for a specified memberObjectId.
 
-    .PARAMETER subscriptionName
-    The Azure Subscription Name where the Resource Group resides.
+    .PARAMETER subscriptionId
+    The Azure Subscription Id where the Resource Group resides.
 
     .PARAMETER roleNameToBeAssigned
     The name of the Azure Role to be assigned.
 
     .PARAMETER memberObjectId
-    The Azure Active Directory Object ID of the User or Group to be assigned the role.
+    The Entra ID of the User or Group to be assigned the role.
 
     .PARAMETER deleteAssignmentOnly
     A switch that tells the script to only delete existing matching role assignments. Required when deleting and re-creating the Azure Active Directory User or Group, as when re-created they receive a different Object ID.
@@ -29,16 +29,16 @@
     None. PIMConfigureEligibleAzureResource.ps1 does not generate any output objects.
 
     .EXAMPLE
-    PIMConfigureEligibleAzureResource.ps1 -subscriptionName {subscriptionName} -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID}
+    PIMConfigureEligibleAzureResource.ps1 -subscriptionId {subscriptionId} -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID}
 
     .EXAMPLE
-    PIMConfigureEligibleAzureResource.ps1 -subscriptionName {subscriptionName} -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID} -deleteAssignmentOnly
+    PIMConfigureEligibleAzureResource.ps1 -subscriptionId {subscriptionId} -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID} -deleteAssignmentOnly
 
     .EXAMPLE
-    PIMConfigureEligibleAzureResource.ps1 -subscriptionName "My Company Subscription"  -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId "a111bb22-cccc-3333-44d5-e66f777gg9h0"
+    PIMConfigureEligibleAzureResource.ps1 -subscriptionId "GUID"  -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId "a111bb22-cccc-3333-44d5-e66f777gg9h0"
 
     .EXAMPLE
-    PIMConfigureEligibleAzureResource.ps1 -subscriptionName {subscriptionName}  -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID} -exportFiles
+    PIMConfigureEligibleAzureResource.ps1 -subscriptionId {subscriptionId}  -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID} -exportFiles
 
     .LINK
     https://github.com/alboroni
@@ -46,7 +46,7 @@
     .NOTES
         Author: Alex Young def his stuff and Connor
         Last Edit: 21-10-25
-        Version 1.0 - Initial Release
+        Version 1.1 - Initial Release
 #>
 
 [CmdletBinding()]
@@ -81,7 +81,7 @@ $notificationRecipients = "shared.mailbox@companydomain.co.uk"
 # Configure The Role Eligibility Justification Message That Will Be Sent On All Alert Emails
 $roleEligibilityJustificationMessage = "Company Standard Assigned By PowerShell"
 
-# Get The Subscription Id
+# Get The Subscription Name From The Subscription Id
 $subscriptionName = (Get-AzSubscription -subscriptionId $subscriptionId).Name
 
 # Get The Id Of The Role To Be Assigned
@@ -96,14 +96,7 @@ $pimRoleDefinitionId = "/subscriptions/$subscriptionId/providers/Microsoft.Autho
 # Set The API Version So It Is Consistent Within The Script
 $apiVersion = "2020-10-01"
 
-# Get The Access Token Required As A Header For Authentication
-$accessToken = (Get-AzAccessToken -Resource 'https://management.azure.com').Token
 
-# Set The Request Headers To Be Used For All API Operations
-$headers = @{ 
-    'Content-Type' = 'application/json'
-    'Authorization' = 'Bearer ' + $accessToken
-}
 
 ############### Query Role Management Policy Starts ###############
     # Query The Role Management Policy For The Specified Azure Resource And Role To Get Its Unique Name And Export The Policy Before Any Changes Are Made
