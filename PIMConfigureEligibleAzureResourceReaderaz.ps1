@@ -52,8 +52,8 @@
 [CmdletBinding()]
 Param(
     [Parameter(Mandatory = $true)]
-    [ValidateLength(1, 64)]
-    [string] $subscriptionName = $null,
+    [ValidateLength(36, 36)]
+    [string] $subscriptionId = $null,
 
     [Parameter(Mandatory = $true)]
     [ValidateLength(1, 90)]
@@ -75,8 +75,8 @@ $notificationRecipients = "shared.mailbox@companydomain.co.uk"
 # Configure The Role Eligibility Justification Message That Will Be Sent On All Alert Emails
 $roleEligibilityJustificationMessage = "Company Standard Assigned By PowerShell"
 
-# Get The Subscription Id
-$subscriptionId = (Get-AzSubscription -SubscriptionName $subscriptionName).Id
+# Get The Subscription name from the Subscription Id
+$subscriptionName = (Get-AzSubscription -SubscriptionId $subscriptionId).Name
 
 # Get The Id Of The Role To Be Assigned
 $roleIdToBeAssigned = (Get-AzRoleDefinition -Name $roleNameToBeAssigned).Id
@@ -90,15 +90,7 @@ $pimRoleDefinitionId = "/subscriptions/$subscriptionId/providers/Microsoft.Autho
 # Set The API Version So It Is Consistent Within The Script
 $apiVersion = "2020-10-01"
 
-# Get The Access Token Required As A Header For Authentication
-$accessToken = (Get-AzAccessToken -Resource 'https://management.azure.com').Token
-
-# Set The Request Headers To Be Used For All API Operations
-$headers = @{ 
-    'Content-Type' = 'application/json'
-    'Authorization' = 'Bearer ' + $accessToken
-}
-
+   
 ############### Query Role Management Policy Starts ###############
     # Query The Role Management Policy For The Specified Azure Resource And Role To Get Its Unique Name And Export The Policy Before Any Changes Are Made
     # Requires Microsoft.Authorization/roleAssignments/read Permissions At The Specified Scope
@@ -110,7 +102,7 @@ $headers = @{
     $listResourceRoleManagementPolicyUri = "https://management.azure.com/$roleAssignmentScope/providers/Microsoft.Authorization/roleManagementPolicies?api-version=$apiVersion&`$filter=$roleDefinitionIdFilter"
 
     # Invoke The Query Request
-    $queryResourceRoleManagementPolicy = Invoke-RestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri -Headers $headers
+    $queryResourceRoleManagementPolicy = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
 
     # Retrieve The Unique Role Management Policy Name
     $roleManagementPolicyId = $queryResourceRoleManagementPolicy.value.name
@@ -450,7 +442,7 @@ $headers = @{
 
     # Invoke The Update Role Management Policy Request
     Write-Host "Updating" $roleNameToBeAssigned "Role Management Policy At Scope /$roleAssignmentScope`n"
-    $roleManagementPolicyUpdate = Invoke-RestMethod -Method 'Patch' -Uri $updateResourceRoleManagementPolicyUri -Headers $headers -Body $updateRequestBody
+    $roleManagementPolicyUpdate = Invoke-AzRestMethod -Method 'Patch' -Uri $updateResourceRoleManagementPolicyUri  -Payload $updateRequestBody
 
     # Export Current Configuration As A Json Filek
     If ($exportFiles -eq $true) {
@@ -464,7 +456,7 @@ $headers = @{
             }
 
         # Output The Role Management Policy Output After Change File
-        $queryResourceRoleManagementPolicy = Invoke-RestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri -Headers $headers
+        $queryResourceRoleManagementPolicy = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
         $queryResourceRoleManagementPolicy | ConvertTo-Json -Depth 100 | Out-File $outputRoleManagementPolicyFileNameAfterChange
     }
 ################ Update Role Management Policy Ends ################
@@ -479,7 +471,7 @@ $headers = @{
     $listEligibleRoleAssignmentsUri = "https://management.azure.com/$roleAssignmentScope/providers/Microsoft.Authorization/roleEligibilityScheduleInstances`?api-version=$apiVersion&`$filter=principalId%20eq%20`'$memberObjectId`'+and+roleDefinitionId%20eq%20`'$pimRoleDefinitionId`'"
 
     # Invoke The List Eligible Role Assignments Request
-    $listEligibleRoleAssignments = Invoke-RestMethod -Method 'Get' -Uri $listEligibleRoleAssignmentsUri -Headers $headers
+    $listEligibleRoleAssignments = Invoke-AzRestMethod -Method 'Get' -Uri $listEligibleRoleAssignmentsUri   
 
     # Export Current Configuration As A Json File
     If ($exportFiles -eq $true) {
@@ -527,7 +519,7 @@ $headers = @{
                 } | ConvertTo-Json -Depth 100
 
                 # Invoke The Delete Existing Eligible Role Assignment Request
-                Invoke-RestMethod -Method 'Put' -Uri $roleEligibilityDeleteScheduleRequestUri -Headers $headers -Body $roleEligibilityDeleteScheduleRequestBody | ConvertTo-Json -Depth 100
+                Invoke-AzRestMethod -Method 'Put' -Uri $roleEligibilityDeleteScheduleRequestUri -Payload $roleEligibilityDeleteScheduleRequestBody | ConvertTo-Json -Depth 100
 
                 # Output Blank Line To Separate Log Sections
                 Write-Host ""
@@ -569,7 +561,7 @@ $headers = @{
         Write-Host "Granting Eligible Role Assignment At Scope /$roleAssignmentScope`n"
 
         # Invoke The Grant Eligible Role Assignment Request
-        Invoke-RestMethod -Method 'Put' -Uri $roleEligibilityScheduleRequestUri -Headers $headers -Body $roleEligibilityScheduleRequestBody | ConvertTo-Json -Depth 100
+        Invoke-AzRestMethod -Method 'Put' -Uri $roleEligibilityScheduleRequestUri -Payload $roleEligibilityScheduleRequestBody | ConvertTo-Json -Depth 100
 
         # Export Current Configuration As A Json File
         If ($exportFiles -eq $true) {
@@ -583,7 +575,7 @@ $headers = @{
                 }
 
             # Invoke The Query Request
-            $queryResourceRoleManagementPolicy = Invoke-RestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri -Headers $headers
+            $queryResourceRoleManagementPolicy = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
             
             # Output The Eligible Role Assignments Output After Change File
             $listEligibleRoleAssignments | ConvertTo-Json -Depth 100 | Out-File $outputEligibleRoleAssignmentsFileNameAfterChange
