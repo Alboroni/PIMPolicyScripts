@@ -81,6 +81,19 @@ $notificationRecipients = "shared.mailbox@companydomain.co.uk"
 # Configure The Role Eligibility Justification Message That Will Be Sent On All Alert Emails
 $roleEligibilityJustificationMessage = "Company Standard Assigned By PowerShell"
 
+# Check if Azure PowerShell context is available (required for pipelines)
+try {
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Error "No Azure PowerShell context found. Please run Connect-AzAccount or ensure the pipeline has proper authentication configured."
+        exit 1
+    }
+    Write-Host "Using Azure context: $($context.Account.Id) in subscription: $($context.Subscription.Name)" -ForegroundColor Green
+} catch {
+    Write-Error "Failed to get Azure context: $_"
+    exit 1
+}
+
 # Get The Subscription Name From The Subscription Id
 $subscriptionName = (Get-AzSubscription -subscriptionId $subscriptionId).Name
 
@@ -109,10 +122,27 @@ $apiVersion = "2020-10-01"
     $listResourceRoleManagementPolicyUri = "https://management.azure.com/$roleAssignmentScope/providers/Microsoft.Authorization/roleManagementPolicies?api-version=$apiVersion&`$filter=$roleDefinitionIdFilter"
 
     # Invoke The Query Request
-    $queryResourceRoleManagementPolicy = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
+    try {
+        $queryResponse = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
+        
+        if ($queryResponse.StatusCode -ne 200) {
+            Write-Error "Failed to query role management policy. Status Code: $($queryResponse.StatusCode). Content: $($queryResponse.Content)"
+            exit 1
+        }
+        
+        $queryResourceRoleManagementPolicy = $queryResponse.Content | ConvertFrom-Json
+        
+        if (-not $queryResourceRoleManagementPolicy.value -or $queryResourceRoleManagementPolicy.value.Count -eq 0) {
+            Write-Error "No role management policy found for role '$roleNameToBeAssigned' at scope '$roleAssignmentScope'"
+            exit 1
+        }
+    } catch {
+        Write-Error "Error querying role management policy: $_"
+        exit 1
+    }
 
     # Retrieve The Unique Role Management Policy Name
-    $roleManagementPolicyId = $queryResourceRoleManagementPolicy.value.name
+    $roleManagementPolicyId = $queryResourceRoleManagementPolicy.value[0].name
 
     # Export Current Configuration As A Json File
     If ($exportFiles -eq $true) {
@@ -140,29 +170,29 @@ $apiVersion = "2020-10-01"
       $activationRules = @(
         # Configure Activation - Activation Maximum Duration (Hours)
         @{
-            isExpirationRequired = "false"
-            maximumDuration = "PT8H" # Options Are From 1 Hour To 24 Hours With 30 Minute Intervals So For 23.5 Hours The Syntax Would Be "PT23H30M"
-            id = "Expiration_EndUser_Assignment"
-            ruleType = "RoleManagementPolicyExpirationRule"
+            isExpirationRequired = "false";
+            maximumDuration = "PT8H"; # Options Are From 1 Hour To 24 Hours With 30 Minute Intervals So For 23.5 Hours The Syntax Would Be "PT23H30M"
+            id = "Expiration_EndUser_Assignment";
+            ruleType = "RoleManagementPolicyExpirationRule";
             "target" = @{
-                caller = "EndUser"
+                caller = "EndUser";
                 operations = @(
-                    "All"
+                    "All";
                     )
-                level = "Assignment"
+                level = "Assignment";
             }
         }
         # Configure Activation - On Activation Require
         @{
             enabledRules = @(
-                "MultiFactorAuthentication" # Azure MFA (Remove If Not Needed)
-                "Justification" # Require Justification On Activation (Remove If Not Needed)
+                "MultiFactorAuthentication" ;# Azure MFA (Remove If Not Needed)
+                "Justification"; # Require Justification On Activation (Remove If Not Needed)
                 "Ticketing" # Require Ticket Information On Activation (Remove If Not Needed)
             )
-            id = "Enablement_EndUser_Assignment"
-            ruleType = "RoleManagementPolicyEnablementRule"
+            id = "Enablement_EndUser_Assignment";
+            ruleType = "RoleManagementPolicyEnablementRule";
             "target" = @{
-                caller = "EndUser"
+                caller = "EndUser";
                 operations = @(
                     "All"
                     )
@@ -172,20 +202,20 @@ $apiVersion = "2020-10-01"
         # Configure Activation - Require Approval To Activate
         @{
             setting = @{
-                isApprovalRequired = "true"
-                isApprovalRequiredForExtension = "false"
-                isRequestorJustificationRequired = "true"
-                approvalMode = "SingleStage"
+                isApprovalRequired = "true";
+                isApprovalRequiredForExtension = "false";
+                isRequestorJustificationRequired = "true";
+                approvalMode = "SingleStage";
                 approvalStages = @(
                     @{
-                        approvalStageTimeOutInDays = "1"
-                        isApproverJustificationRequired = "true"
-                        escalationTimeInMinutes = "0"
+                        approvalStageTimeOutInDays = "1";
+                        isApproverJustificationRequired = "true";
+                        escalationTimeInMinutes = "0";
                         primaryApprovers = @(
                             @{
                                  id = $approverGrpObjectId
-                                description = "Alex2" # This Is The Display Name Of The Approver Which Appears In Lowercase Text In The Portal When Using The API - When Configuring Via The Portal it Correctly Resolves To The AAD Display Name & UPN
-                                 isBackup = "false"
+                                description = "Alex2"; # This Is The Display Name Of The Approver Which Appears In Lowercase Text In The Portal When Using The API - When Configuring Via The Portal it Correctly Resolves To The AAD Display Name & UPN
+                                 isBackup = "false";
                                  userType = "User" # "User"
                              }
                         )
@@ -193,8 +223,8 @@ $apiVersion = "2020-10-01"
                     }
                 )
             }
-            id = "Approval_EndUser_Assignment"
-            ruleType = "RoleManagementPolicyApprovalRule"
+            id = "Approval_EndUser_Assignment";
+            ruleType = "RoleManagementPolicyApprovalRule";
             "target" = @{
                 caller = "EndUser"
                 operations = @(
@@ -209,12 +239,12 @@ $apiVersion = "2020-10-01"
     $assignmentRules = @(
         # Configure Assignment - Allow Permanent Eligible Assignment
         @{
-            isExpirationRequired = "false" # "true"
-            maximumDuration = "P365D" # "P180D", "P90D", "P30D", "P15D" - Expire Eligible Assignments After - Not Required When Enabling 'Allow Permanent Eligible Assignment' But Left In To Mirror The Portal Behaviour
-            id = "Expiration_Admin_Eligibility"
-            ruleType = "RoleManagementPolicyExpirationRule"
+            isExpirationRequired = "false"; # "true"
+            maximumDuration = "P365D" ;# "P180D", "P90D", "P30D", "P15D" - Expire Eligible Assignments After - Not Required When Enabling 'Allow Permanent Eligible Assignment' But Left In To Mirror The Portal Behaviour
+            id = "Expiration_Admin_Eligibility";
+            ruleType = "RoleManagementPolicyExpirationRule";
             "target" = @{
-                caller = "Admin"
+                caller = "Admin";
                 operations = @(
                     "All"
                     )
@@ -223,15 +253,15 @@ $apiVersion = "2020-10-01"
         }
         # Configure Assignment - Allow Permanent Active Assignment
         @{
-            isExpirationRequired = "true" # "true"
-            maximumDuration = "P180D" # "P365D", "P90D", "P30D", "P15D" - Expire Active Assignments After - Not Required When Enabling 'Allow Permanent Active Assignment' But Left In To Mirror The Portal Behaviour
-            id = "Expiration_Admin_Assignment"
-            ruleType = "RoleManagementPolicyExpirationRule"
+            isExpirationRequired = "true"; # "true"
+            maximumDuration = "P180D"; # "P365D", "P90D", "P30D", "P15D" - Expire Active Assignments After - Not Required When Enabling 'Allow Permanent Active Assignment' But Left In To Mirror The Portal Behaviour
+            id = "Expiration_Admin_Assignment";
+            ruleType = "RoleManagementPolicyExpirationRule";
             "target" = @{
-                caller = "Admin"
+                caller = "Admin";
                 operations = @(
                     "All"
-                    )
+                    );
                 level = "Assignment"
             }
         }
@@ -241,13 +271,13 @@ $apiVersion = "2020-10-01"
                 #"MultiFactorAuthentication" # Require Azure Multi-Factor Authentication On Active Assignment (Remove If Not Needed)
                 #"Justification" # Require Justification On Active Assignment (Remove If Not Needed)
             )
-            id = "Enablement_Admin_Assignment"
-            ruleType = "RoleManagementPolicyEnablementRule"
+            id = "Enablement_Admin_Assignment";
+            ruleType = "RoleManagementPolicyEnablementRule";
             "target" = @{
-                caller = "Admin"
+                caller = "Admin";
                 operations = @(
                     "All"
-                    )
+                    );
                 level = "Assignment"
             }
         }
@@ -257,115 +287,115 @@ $apiVersion = "2020-10-01"
     $notificationRules = @(
         # Configure Notification - Send Notifications When Members Are Assigned As Eligible To This Role - Admin
         @{
-            notificationType = "Email"
-            recipientType = "Admin"
-            isDefaultRecipientsEnabled = "true" # "false"
-            notificationLevel = "All" # "Critical"
+            notificationType = "Email";
+            recipientType = "Admin";
+            isDefaultRecipientsEnabled = "true" ;# "false"
+            notificationLevel = "All" ;# "Critical"
             notificationRecipients = @(
                 $notificationRecipients
-            )
-            id = "Notification_Admin_Admin_Eligibility"
-            ruleType = "RoleManagementPolicyNotificationRule"
+            );
+            id = "Notification_Admin_Admin_Eligibility";
+            ruleType = "RoleManagementPolicyNotificationRule";
             "target" = @{
-                caller = "Admin"
+                caller = "Admin";
                 operations = @(
                     "All"
-                    )
+                    );
                 level = "Eligibility"
             }
         }
         # Configure Notification - Send Notifications When Members Are Assigned As Eligible To This Role - Assignee
         @{
-            notificationType = "Email"
-            recipientType = "Requestor"
-            isDefaultRecipientsEnabled = "true" # "false"
-            notificationLevel = "All" # "Critical"
+            notificationType = "Email";
+            recipientType = "Requestor";
+            isDefaultRecipientsEnabled = "true"; # "false"
+            notificationLevel = "All"; # "Critical"
             notificationRecipients = @(
                 $notificationRecipients
-            )
-            id = "Notification_Requestor_Admin_Eligibility"
-            ruleType = "RoleManagementPolicyNotificationRule"
+            );
+            id = "Notification_Requestor_Admin_Eligibility";
+            ruleType = "RoleManagementPolicyNotificationRule";
             "target" = @{
                 caller = "Admin"
                 operations = @(
                     "All"
-                    )
+                    );
                 level = "Eligibility"
             }
         }
         # Configure Notification - Send Notifications When Members Are Assigned As Eligible To This Role - Approver
         @{
-            notificationType = "Email"
-            recipientType = "Approver"
-            isDefaultRecipientsEnabled = "true" # "false"
-            notificationLevel = "All" # "Critical"
+            notificationType = "Email";
+            recipientType = "Approver";
+            isDefaultRecipientsEnabled = "true"; # "false"
+            notificationLevel = "All"; # "Critical"
             notificationRecipients = @(
                 $notificationRecipients
-            )
-            id = "Notification_Approver_Admin_Eligibility"
-            ruleType = "RoleManagementPolicyNotificationRule"
+            );
+            id = "Notification_Approver_Admin_Eligibility";
+            ruleType = "RoleManagementPolicyNotificationRule";
             "target" = @{
-                caller = "Admin"
+                caller = "Admin";
                 operations = @(
                     "All"
-                    )
+                    );
                 level = "Eligibility"
             }
         }
         # Configure Notification - Send Notifications When Members Are Assigned As Active To This Role - Admin
         @{
-            notificationType = "Email"
-            recipientType = "Admin"
-            isDefaultRecipientsEnabled = "true" # "false"
-            notificationLevel = "All" # "Critical"
+            notificationType = "Email";
+            recipientType = "Admin";
+            isDefaultRecipientsEnabled = "true"; # "false"
+            notificationLevel = "All" ;# "Critical"
             notificationRecipients = @(
                 $notificationRecipients
-            )
-            id = "Notification_Admin_Admin_Assignment"
-            ruleType = "RoleManagementPolicyNotificationRule"
+            );
+            id = "Notification_Admin_Admin_Assignment";
+            ruleType = "RoleManagementPolicyNotificationRule";
             "target" = @{
-                caller = "Admin"
+                caller = "Admin";
                 operations = @(
-                    "All"
-                    )
-                level = "Assignment"
+                      "All"
+                    );
+                level = "Assignment";
             }
         }
         # Configure Notification - Send Notifications When Members Are Assigned As Active To This Role - Assignee
         @{
-            notificationType = "Email"
-            recipientType = "Requestor"
-            isDefaultRecipientsEnabled = "true" # "false"
-            notificationLevel = "All" # "Critical"
+            notificationType = "Email";
+            recipientType = "Requestor";
+            isDefaultRecipientsEnabled = "true"; # "false"
+            notificationLevel = "All" ;# "Critical"
             notificationRecipients = @(
                 $notificationRecipients
-            )
-            id = "Notification_Requestor_Admin_Assignment"
-            ruleType = "RoleManagementPolicyNotificationRule"
+            );
+            id = "Notification_Requestor_Admin_Assignment";
+            ruleType = "RoleManagementPolicyNotificationRule";
             "target" = @{
-                caller = "Admin"
+                caller = "Admin";
                 operations = @(
                     "All"
-                    )
+                    );
                 level = "Assignment"
             }
         }
         # Configure Notification - Send Notifications When Members Are Assigned As Active To This Role - Approver
         @{
-            notificationType = "Email"
-            recipientType = "Approver"
-            isDefaultRecipientsEnabled = "true" # "false"
-            notificationLevel = "All" # "Critical"
+            notificationType = "Email";
+            recipientType = "Approver";
+            isDefaultRecipientsEnabled = "true" ;# "false"
+            notificationLevel = "All"; # "Critical"
             notificationRecipients = @(
                 $notificationRecipients
-            )
-            id = "Notification_Approver_Admin_Assignment"
-            ruleType = "RoleManagementPolicyNotificationRule"
+            );
+            id = "Notification_Approver_Admin_Assignment";
+            ruleType = "RoleManagementPolicyNotificationRule";
             "target" = @{
-                caller = "Admin"
+                caller = "Admin";
                 operations = @(
                     "All"
-                    )
+                    );
                 level = "Assignment"
             }
         }
@@ -374,57 +404,57 @@ $apiVersion = "2020-10-01"
          # Configure Notification - Send Notifications When Eligible Members Activate This Role - Admin
 
                @{
-            notificationType = "Email"
-            recipientType = "Admin"
-            isDefaultRecipientsEnabled = "false" # "false"
-            notificationLevel = "All" # "Critical"
+            notificationType = "Email";
+            recipientType = "Admin";
+            isDefaultRecipientsEnabled = "false" ;# "false"
+            notificationLevel = "All"; # "Critical"
             notificationRecipients = @(
                 $notificationRecipients
-            )
-            id = "Notification_Admin_EndUser_Assignment"
-            ruleType = "RoleManagementPolicyNotificationRule"
+            );
+            id = "Notification_Admin_EndUser_Assignment";
+            ruleType = "RoleManagementPolicyNotificationRule";
             "target" = @{
-                caller = "EndUser"
+                caller = "EndUser";
                 operations = @(
                     "All"
-                    )
-                level = "Assignment"
+                    );
+                level = "Assignment";
             }
         }
     
         # Configure Notification - Send Notifications When Eligible Members Activate This Role - Requestor
         @{
-            notificationType = "Email"
-            recipientType = "Requestor"
-            isDefaultRecipientsEnabled = "true" # "false"
-            notificationLevel = "All" # "Critical"
+            notificationType = "Email";
+            recipientType = "Requestor";
+            isDefaultRecipientsEnabled = "true" ;# "false"
+            notificationLevel = "All"; # "Critical"
             notificationRecipients = @(
                 $notificationRecipients
-            )
-            id = "Notification_Requestor_EndUser_Assignment"
-            ruleType = "RoleManagementPolicyNotificationRule"
+            );
+            id = "Notification_Requestor_EndUser_Assignment";
+            ruleType = "RoleManagementPolicyNotificationRule";
             "target" = @{
                 caller = "EndUser"
                 operations = @(
-                    "All"
+                    "All";
                     )
                 level = "Assignment"
             }
         }
         # Configure Notification - Send Notifications When Eligible Members Activate This Role - Approver
         @{
-            notificationType = "Email"
-            recipientType = "Approver"
-            isDefaultRecipientsEnabled = "true" # Removing Approver As The Default Recipient Means That All Approvers Will Stop Getting Email Notifications Asking Them To Approve Each Request
+            notificationType = "Email";
+            recipientType = "Approver";
+            isDefaultRecipientsEnabled = "true"; # Removing Approver As The Default Recipient Means That All Approvers Will Stop Getting Email Notifications Asking Them To Approve Each Request
             notificationLevel = "All" # "Critical"
             # notificationRecipients = @() # This Is Left Intentionally Blank To Mirror The Portal Behaviour As It Is Not Ever Populated
-            id = "Notification_Approver_EndUser_Assignment"
-            ruleType = "RoleManagementPolicyNotificationRule"
+            id = "Notification_Approver_EndUser_Assignment";
+            ruleType = "RoleManagementPolicyNotificationRule";
             "target" = @{
-                caller = "EndUser"
+                caller = "EndUser";
                 operations = @(
                     "All"
-                    )
+                    );
                 level = "Assignment"
             }
         }
@@ -446,7 +476,19 @@ $apiVersion = "2020-10-01"
 
     # Invoke The Update Role Management Policy Request
     Write-Host "Updating" $roleNameToBeAssigned "Role Management Policy At Scope /$roleAssignmentScope`n"
-    $roleManagementPolicyUpdate = Invoke-AzRestMethod -Method 'Patch' -Uri $updateResourceRoleManagementPolicyUri  -Payload $updateRequestBody
+    try {
+        $updateResponse = Invoke-AzRestMethod -Method 'Patch' -Uri $updateResourceRoleManagementPolicyUri -Payload $updateRequestBody
+        
+        if ($updateResponse.StatusCode -notin @(200, 201, 202)) {
+            Write-Error "Failed to update role management policy. Status Code: $($updateResponse.StatusCode). Content: $($updateResponse.Content)"
+            exit 1
+        }
+        
+        Write-Host "Successfully updated role management policy" -ForegroundColor Green
+    } catch {
+        Write-Error "Error updating role management policy: $_"
+        exit 1
+    }
 
     # Export Current Configuration As A Json Filek
     If ($exportFiles -eq $true) {
@@ -460,7 +502,8 @@ $apiVersion = "2020-10-01"
             }
 
         # Output The Role Management Policy Output After Change File
-        $queryResourceRoleManagementPolicy = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
+        $queryResponse = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
+        $queryResourceRoleManagementPolicy = $queryResponse.Content | ConvertFrom-Json
         $queryResourceRoleManagementPolicy | ConvertTo-Json -Depth 100 | Out-File $outputRoleManagementPolicyFileNameAfterChange
     }
 ################ Update Role Management Policy Ends ################
@@ -475,7 +518,19 @@ $apiVersion = "2020-10-01"
     $listEligibleRoleAssignmentsUri = "https://management.azure.com/$roleAssignmentScope/providers/Microsoft.Authorization/roleEligibilityScheduleInstances`?api-version=$apiVersion&`$filter=principalId%20eq%20`'$memberObjectId`'+and+roleDefinitionId%20eq%20`'$pimRoleDefinitionId`'"
 
     # Invoke The List Eligible Role Assignments Request
-    $listEligibleRoleAssignments = Invoke-AZRestMethod -Method 'Get' -Uri $listEligibleRoleAssignmentsUri 
+    try {
+        $response = Invoke-AzRestMethod -Method 'Get' -Uri $listEligibleRoleAssignmentsUri 
+        
+        if ($response.StatusCode -ne 200) {
+            Write-Error "Failed to list eligible role assignments. Status Code: $($response.StatusCode). Content: $($response.Content)"
+            exit 1
+        }
+        
+        $listEligibleRoleAssignments = $response.Content | ConvertFrom-Json
+    } catch {
+        Write-Error "Error listing eligible role assignments: $_"
+        exit 1
+    }
 
     # Export Current Configuration As A Json File
     If ($exportFiles -eq $true) {
@@ -523,7 +578,17 @@ $apiVersion = "2020-10-01"
                 } | ConvertTo-Json -Depth 100
 
                 # Invoke The Delete Existing Eligible Role Assignment Request
-                Invoke-AZRestMethod -Method 'Put' -Uri $roleEligibilityDeleteScheduleRequestUri -Payload $roleEligibilityDeleteScheduleRequestBody | ConvertTo-Json -Depth 100
+                try {
+                    $deleteResponse = Invoke-AzRestMethod -Method 'Put' -Uri $roleEligibilityDeleteScheduleRequestUri -Payload $roleEligibilityDeleteScheduleRequestBody
+                    
+                    if ($deleteResponse.StatusCode -notin @(200, 201, 202)) {
+                        Write-Warning "Failed to delete existing role assignment. Status Code: $($deleteResponse.StatusCode). Content: $($deleteResponse.Content)"
+                    } else {
+                        Write-Host "Successfully deleted existing role assignment" -ForegroundColor Green
+                    }
+                } catch {
+                    Write-Warning "Error deleting existing role assignment: $_"
+                }
 
                 # Output Blank Line To Separate Log Sections
                 Write-Host ""
@@ -565,7 +630,19 @@ $apiVersion = "2020-10-01"
         Write-Host "Granting Eligible Role Assignment At Scope /$roleAssignmentScope`n"
 
         # Invoke The Grant Eligible Role Assignment Request
-        Invoke-AzRestMethod -Method 'Put' -Uri $roleEligibilityScheduleRequestUri  -Payload $roleEligibilityScheduleRequestBody | ConvertTo-Json -Depth 100
+        try {
+            $grantResponse = Invoke-AzRestMethod -Method 'Put' -Uri $roleEligibilityScheduleRequestUri -Payload $roleEligibilityScheduleRequestBody
+            
+            if ($grantResponse.StatusCode -notin @(200, 201, 202)) {
+                Write-Error "Failed to grant eligible role assignment. Status Code: $($grantResponse.StatusCode). Content: $($grantResponse.Content)"
+                exit 1
+            }
+            
+            Write-Host "Successfully granted eligible role assignment" -ForegroundColor Green
+        } catch {
+            Write-Error "Error granting eligible role assignment: $_"
+            exit 1
+        }
 
         # Export Current Configuration As A Json File
         If ($exportFiles -eq $true) {
@@ -579,7 +656,8 @@ $apiVersion = "2020-10-01"
                 }
 
             # Invoke The Query Request
-            $queryResourceRoleManagementPolicy = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
+            $queryResponse = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
+            $queryResourceRoleManagementPolicy = $queryResponse.Content | ConvertFrom-Json
             
             # Output The Eligible Role Assignments Output After Change File
             $listEligibleRoleAssignments | ConvertTo-Json -Depth 100 | Out-File $outputEligibleRoleAssignmentsFileNameAfterChange
