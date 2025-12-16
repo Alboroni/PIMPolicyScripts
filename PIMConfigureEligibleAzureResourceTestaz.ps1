@@ -14,7 +14,7 @@
     The name of the Azure Role to be assigned.
 
     .PARAMETER memberObjectId
-    The Azure Active Directory Object ID of the User or Group to be assigned the role.
+    The Entra ID of the User or Group to be assigned the role.
 
     .PARAMETER deleteAssignmentOnly
     A switch that tells the script to only delete existing matching role assignments. Required when deleting and re-creating the Azure Active Directory User or Group, as when re-created they receive a different Object ID.
@@ -29,16 +29,16 @@
     None. PIMConfigureEligibleAzureResource.ps1 does not generate any output objects.
 
     .EXAMPLE
-    PIMConfigureEligibleAzureResource.ps1 -subscriptionName {subscriptionName} -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID}
+    PIMConfigureEligibleAzureResource.ps1 -subscriptionId {subscriptionId} -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID}
 
     .EXAMPLE
-    PIMConfigureEligibleAzureResource.ps1 -subscriptionName {subscriptionName} -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID} -deleteAssignmentOnly
+    PIMConfigureEligibleAzureResource.ps1 -subscriptionId {subscriptionId} -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID} -deleteAssignmentOnly
 
     .EXAMPLE
-    PIMConfigureEligibleAzureResource.ps1 -subscriptionName "My Company Subscription"  -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId "a111bb22-cccc-3333-44d5-e66f777gg9h0"
+    PIMConfigureEligibleAzureResource.ps1 -subscriptionId "GUID"  -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId "a111bb22-cccc-3333-44d5-e66f777gg9h0"
 
     .EXAMPLE
-    PIMConfigureEligibleAzureResource.ps1 -subscriptionName {subscriptionName}  -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID} -exportFiles
+    PIMConfigureEligibleAzureResource.ps1 -subscriptionId {subscriptionId}  -roleNameToBeAssigned "Storage Account Contributor" -memberObjectId {AADObjectID} -exportFiles
 
     .LINK
     https://github.com/alboroni
@@ -46,7 +46,7 @@
     .NOTES
         Author: Alex Young def his stuff and Connor
         Last Edit: 21-10-25
-        Version 1.0 - Initial Release
+        Version 1.1 - Initial Release
 #>
 
 [CmdletBinding()]
@@ -63,6 +63,7 @@ Param(
     [ValidateLength(36,36)]
     [string] $memberObjectId = $null,
     
+    
     [switch] $deleteAssignmentOnly,
 
     [switch] $exportFiles
@@ -74,8 +75,21 @@ $notificationRecipients = "shared.mailbox@companydomain.co.uk"
 # Configure The Role Eligibility Justification Message That Will Be Sent On All Alert Emails
 $roleEligibilityJustificationMessage = "Company Standard Assigned By PowerShell"
 
-# Get The Subscription Id
-$subscriptionId = (Get-AzSubscription -SubscriptionId $subscriptionId).Name
+# Check if Azure PowerShell context is available (required for pipelines)
+try {
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Error "No Azure PowerShell context found. Please run Connect-AzAccount or ensure the pipeline has proper authentication configured."
+        exit 1
+    }
+    Write-Host "Using Azure context: $($context.Account.Id) in subscription: $($context.Subscription.Name)" -ForegroundColor Green
+} catch {
+    Write-Error "Failed to get Azure context: $_"
+    exit 1
+}
+
+# Get The Subscription Name From The Subscription Id
+$subscriptionName = (Get-AzSubscription -subscriptionId $subscriptionId).Name
 
 # Get The Id Of The Role To Be Assigned
 $roleIdToBeAssigned = (Get-AzRoleDefinition -Name $roleNameToBeAssigned).Id
@@ -90,6 +104,7 @@ $pimRoleDefinitionId = "/subscriptions/$subscriptionId/providers/Microsoft.Autho
 $apiVersion = "2020-10-01"
 
 
+
 ############### Query Role Management Policy Starts ###############
     # Query The Role Management Policy For The Specified Azure Resource And Role To Get Its Unique Name And Export The Policy Before Any Changes Are Made
     # Requires Microsoft.Authorization/roleAssignments/read Permissions At The Specified Scope
@@ -101,10 +116,27 @@ $apiVersion = "2020-10-01"
     $listResourceRoleManagementPolicyUri = "https://management.azure.com/$roleAssignmentScope/providers/Microsoft.Authorization/roleManagementPolicies?api-version=$apiVersion&`$filter=$roleDefinitionIdFilter"
 
     # Invoke The Query Request
-    $queryResourceRoleManagementPolicy = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri
+    try {
+        $queryResponse = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
+        
+        if ($queryResponse.StatusCode -ne 200) {
+            Write-Error "Failed to query role management policy. Status Code: $($queryResponse.StatusCode). Content: $($queryResponse.Content)"
+            exit 1
+        }
+        
+        $queryResourceRoleManagementPolicy = $queryResponse.Content | ConvertFrom-Json
+        
+        if (-not $queryResourceRoleManagementPolicy.value -or $queryResourceRoleManagementPolicy.value.Count -eq 0) {
+            Write-Error "No role management policy found for role '$roleNameToBeAssigned' at scope '$roleAssignmentScope'"
+            exit 1
+        }
+    } catch {
+        Write-Error "Error querying role management policy: $_"
+        exit 1
+    }
 
     # Retrieve The Unique Role Management Policy Name
-    $roleManagementPolicyId = $queryResourceRoleManagementPolicy.value.name
+    $roleManagementPolicyId = $queryResourceRoleManagementPolicy.value[0].name
 
     # Export Current Configuration As A Json File
     If ($exportFiles -eq $true) {
@@ -438,7 +470,19 @@ $apiVersion = "2020-10-01"
 
     # Invoke The Update Role Management Policy Request
     Write-Host "Updating" $roleNameToBeAssigned "Role Management Policy At Scope /$roleAssignmentScope`n"
-    $roleManagementPolicyUpdate = Invoke-AzRestMethod -Method 'Patch' -Uri $updateResourceRoleManagementPolicyUri -Payload $updateRequestBody
+    try {
+        $updateResponse = Invoke-AzRestMethod -Method 'Patch' -Uri $updateResourceRoleManagementPolicyUri -Payload $updateRequestBody
+        
+        if ($updateResponse.StatusCode -notin @(200, 201, 202)) {
+            Write-Error "Failed to update role management policy. Status Code: $($updateResponse.StatusCode). Content: $($updateResponse.Content)"
+            exit 1
+        }
+        
+        Write-Host "Successfully updated role management policy" -ForegroundColor Green
+    } catch {
+        Write-Error "Error updating role management policy: $_"
+        exit 1
+    }
 
     # Export Current Configuration As A Json Filek
     If ($exportFiles -eq $true) {
@@ -452,7 +496,8 @@ $apiVersion = "2020-10-01"
             }
 
         # Output The Role Management Policy Output After Change File
-        $queryResourceRoleManagementPolicy = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri
+        $queryResponse = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
+        $queryResourceRoleManagementPolicy = $queryResponse.Content | ConvertFrom-Json
         $queryResourceRoleManagementPolicy | ConvertTo-Json -Depth 100 | Out-File $outputRoleManagementPolicyFileNameAfterChange
     }
 ################ Update Role Management Policy Ends ################
@@ -467,7 +512,19 @@ $apiVersion = "2020-10-01"
     $listEligibleRoleAssignmentsUri = "https://management.azure.com/$roleAssignmentScope/providers/Microsoft.Authorization/roleEligibilityScheduleInstances`?api-version=$apiVersion&`$filter=principalId%20eq%20`'$memberObjectId`'+and+roleDefinitionId%20eq%20`'$pimRoleDefinitionId`'"
 
     # Invoke The List Eligible Role Assignments Request
-    $listEligibleRoleAssignments = Invoke-AzRestMethod -Method 'Get' -Uri $listEligibleRoleAssignmentsUri
+    try {
+        $response = Invoke-AzRestMethod -Method 'Get' -Uri $listEligibleRoleAssignmentsUri 
+        
+        if ($response.StatusCode -ne 200) {
+            Write-Error "Failed to list eligible role assignments. Status Code: $($response.StatusCode). Content: $($response.Content)"
+            exit 1
+        }
+        
+        $listEligibleRoleAssignments = $response.Content | ConvertFrom-Json
+    } catch {
+        Write-Error "Error listing eligible role assignments: $_"
+        exit 1
+    }
 
     # Export Current Configuration As A Json File
     If ($exportFiles -eq $true) {
@@ -515,7 +572,17 @@ $apiVersion = "2020-10-01"
                 } | ConvertTo-Json -Depth 100
 
                 # Invoke The Delete Existing Eligible Role Assignment Request
-                Invoke-AzRestMethod -Method 'Put' -Uri $roleEligibilityDeleteScheduleRequestUri -Body $roleEligibilityDeleteScheduleRequestBody | ConvertTo-Json -Depth 100
+                try {
+                    $deleteResponse = Invoke-AzRestMethod -Method 'Put' -Uri $roleEligibilityDeleteScheduleRequestUri -Payload $roleEligibilityDeleteScheduleRequestBody
+                    
+                    if ($deleteResponse.StatusCode -notin @(200, 201, 202)) {
+                        Write-Warning "Failed to delete existing role assignment. Status Code: $($deleteResponse.StatusCode). Content: $($deleteResponse.Content)"
+                    } else {
+                        Write-Host "Successfully deleted existing role assignment" -ForegroundColor Green
+                    }
+                } catch {
+                    Write-Warning "Error deleting existing role assignment: $_"
+                }
 
                 # Output Blank Line To Separate Log Sections
                 Write-Host ""
@@ -557,7 +624,19 @@ $apiVersion = "2020-10-01"
         Write-Host "Granting Eligible Role Assignment At Scope /$roleAssignmentScope`n"
 
         # Invoke The Grant Eligible Role Assignment Request
-        Invoke-AzRestMethod -Method 'Put' -Uri $roleEligibilityScheduleRequestUri  -Payload $roleEligibilityScheduleRequestBody | ConvertTo-Json -Depth 100
+        try {
+            $grantResponse = Invoke-AzRestMethod -Method 'Put' -Uri $roleEligibilityScheduleRequestUri -Payload $roleEligibilityScheduleRequestBody
+            
+            if ($grantResponse.StatusCode -notin @(200, 201, 202)) {
+                Write-Error "Failed to grant eligible role assignment. Status Code: $($grantResponse.StatusCode). Content: $($grantResponse.Content)"
+                exit 1
+            }
+            
+            Write-Host "Successfully granted eligible role assignment" -ForegroundColor Green
+        } catch {
+            Write-Error "Error granting eligible role assignment: $_"
+            exit 1
+        }
 
         # Export Current Configuration As A Json File
         If ($exportFiles -eq $true) {
@@ -571,7 +650,8 @@ $apiVersion = "2020-10-01"
                 }
 
             # Invoke The Query Request
-            $queryResourceRoleManagementPolicy = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri
+            $queryResponse = Invoke-AzRestMethod -Method 'Get' -Uri $listResourceRoleManagementPolicyUri 
+            $queryResourceRoleManagementPolicy = $queryResponse.Content | ConvertFrom-Json
             
             # Output The Eligible Role Assignments Output After Change File
             $listEligibleRoleAssignments | ConvertTo-Json -Depth 100 | Out-File $outputEligibleRoleAssignmentsFileNameAfterChange
