@@ -63,6 +63,7 @@ Param(
     [ValidateLength(36,36)]
     [string] $memberObjectId = $null,
     
+    [switch] $permanentActiveAssignment,
     
     [switch] $deleteAssignmentOnly,
 
@@ -594,9 +595,57 @@ $apiVersion = "2020-10-01"
     }
 ################ Remove Existing Eligible Role Assignment If It Exists So Code Is Idempotent Ends ################
 
+############### Grant The Permanent Active Role Assignment Starts (If Selected) ###############
+    # Grant Permanent Active Role Assignment If The 'permanentActiveAssignment' Switch Is Used
+    If (($deleteAssignmentOnly -eq $false) -and ($permanentActiveAssignment -eq $true)) {
+        
+        # Grant The Permanent Active Role Assignment
+        # Requires Microsoft.Authorization/roleAssignments/Write Permissions
+        # PUT https://management.azure.com/{scope}/providers/Microsoft.Authorization/roleAssignmentScheduleRequests/{roleAssignmentScheduleRequestName}?api-version=2020-10-01
+
+        # Generate A Unique GUID To Be Used As The Role Assignment Schedule Request Name
+        $roleAssignmentGrantScheduleRequestName = (New-Guid).Guid
+
+        # Build The Role Assignment Schedule Request URI
+        $roleAssignmentScheduleRequestUri = "https://management.azure.com/providers/Microsoft.Subscription/$roleAssignmentScope/providers/Microsoft.Authorization/roleAssignmentScheduleRequests/$roleAssignmentGrantScheduleRequestName`?api-version=$apiVersion"
+
+        # Create The Role Assignment Schedule Request Body For Permanent Active Assignment
+        $roleAssignmentScheduleRequestBody = @{
+            properties = @{
+                principalId = $memberObjectId
+                requestType = "AdminAssign"
+                roleDefinitionId = $pimRoleDefinitionId
+                justification = $roleEligibilityJustificationMessage
+                scheduleInfo = @{
+                    expiration = @{
+                        type = "NoExpiration"
+                    }
+                }
+            }
+        } | ConvertTo-Json -Depth 100
+
+        Write-Host "Granting Permanent Active Role Assignment At Scope /$roleAssignmentScope`n"
+
+        # Invoke The Grant Permanent Active Role Assignment Request
+        try {
+            $grantActiveResponse = Invoke-AzRestMethod -Method 'Put' -Uri $roleAssignmentScheduleRequestUri -Payload $roleAssignmentScheduleRequestBody
+            
+            if ($grantActiveResponse.StatusCode -notin @(200, 201, 202)) {
+                Write-Error "Failed to grant permanent active role assignment. Status Code: $($grantActiveResponse.StatusCode). Content: $($grantActiveResponse.Content)"
+                exit 1
+            }
+            
+            Write-Host "Successfully granted permanent active role assignment" -ForegroundColor Green
+        } catch {
+            Write-Error "Error granting permanent active role assignment: $_"
+            exit 1
+        }
+    }
+################ Grant The Permanent Active Role Assignment Ends ################
+
 ############### Grant The Eligible Role Assignment Starts ###############
-    # Do Not Grant The Eligible Role Assignment If The 'deleteAssignmentOnly' Switch Is In Use
-    If ($deleteAssignmentOnly -eq $false) {
+    # Do Not Grant The Eligible Role Assignment If The 'deleteAssignmentOnly' Or 'permanentActiveAssignment' Switch Is In Use
+    If (($deleteAssignmentOnly -eq $false) -and ($permanentActiveAssignment -eq $false)) {
         
         # Grant The Eligible Role Assignment
         # Requires Microsoft.Authorization/roleAssignments/Write Permissions
